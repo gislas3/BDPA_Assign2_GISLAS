@@ -4,7 +4,7 @@ package preproc;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.util.Arrays;
+//import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
@@ -14,11 +14,13 @@ import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+//import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Counters;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
+//import org.apache.hadoop.mapreduce.Partitioner;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
@@ -57,15 +59,19 @@ public class PreProcess extends Configured implements Tool {
 		myjob.setJarByClass(PreProcess.class); 
 		
 		// set output key and value classes for reducer
-		myjob.setOutputKeyClass(LongWritable.class); 
+		//myjob.setOutputKeyClass(LongWritable.class); 
+		myjob.setOutputKeyClass(LongWritable.class);
 		myjob.setOutputValueClass(Text.class);
 		
 		//set output key and value classes for the mapper
 		myjob.setMapOutputKeyClass(Text.class);
-		myjob.setMapOutputValueClass(LongWritable.class);
+		myjob.setMapOutputValueClass(Text.class);
+		//myjob.setMapOutputValueClass(LongWritable.class);
 
 		myjob.setMapperClass(Map.class); //set the mapper class
 		myjob.setNumReduceTasks(1); //use one reducer
+		myjob.setCombinerClass(Combine.class);
+		//myjob.setPartitionerClass(Partition.class);
 		myjob.setReducerClass(Reduce.class); //set the reducer class
 		
 		//set input and output format classes to TextInput and TextOutput 
@@ -100,11 +106,16 @@ public class PreProcess extends Configured implements Tool {
 		}
 	}
 
-	//overrides mapper class - outputs as key value pairs words, and value the line number
+	//overrides mapper class - outputs two separate types of key/value pairs
+	// first type is word/frequency, the second type is of the form document_id/word
+	//keys are output so as the former are output prior to the latter so frequencies can be
+	//computed in the reducer prior to printing out the lines in ascending order of global frequency
 	public static class Map extends
-			Mapper<LongWritable, Text, Text, LongWritable> {
+			Mapper<LongWritable, Text, Text, Text> {
 		private HashSet<String> swords; //store the stop words 
-		
+		private Text word = new Text(); //used to store the word to be printed
+		private String docid_template = "########################"; //so sorting works correctly on numbers in string format
+		private final static Text ONE = new Text("1"); // for the frequency
 		//setup will read in the stopwords.csv file, and store the words in the global HashSet swords
 		@Override
 		protected void setup(Context context) throws IOException, InterruptedException {
@@ -142,62 +153,99 @@ public class PreProcess extends Configured implements Tool {
 			String[] line = value.toString().toLowerCase().split("\\W"); //split on nonword characters (defined in java as all non alphanumeric characters)
 			for (int i = 0; i < line.length; i++) {
 				if (!swords.contains(line[i]) && !line[i].isEmpty()) { //write to the context if non-empty and the word is not a stopword
-					context.write(new Text(line[i]), key);
+					String oldkey = "" + key; // convert the key to a string
+					String newkey = docid_template.substring(0, docid_template.length() - oldkey.length()) + oldkey; //format the key
+					word.set(line[i]);
+					context.write(word, ONE); // write the word and a count for its frequency
+					context.write(new Text("{" + newkey), word); //write the doc id and the word
 				}
 			}
 
 		}
 	}
 
-	//reducer takes in key value pairs of Text, LongWritable and outputs LongWritable, Text key value pairs
-	//where the values to write are the document id and the line in the document
-	public static class Reduce extends Reducer<Text, LongWritable, LongWritable, Text> {
-		HashMap<String, Long> freqs = new HashMap<String, Long>(); //will store the frequencies of each word
-		HashMap<Long, LinkedList<String>> docs = new HashMap<Long, LinkedList<String>>(); //will store the lines in main memory
-		
+	//combiner class adds frequencies and concatenates strings (
+	public static class Combine extends Reducer<Text, Text, Text, Text> {
 		@Override
-		public void reduce(Text key, Iterable<LongWritable> values, Context context) throws IOException, InterruptedException {
-			long fr = 0; //used to store the frequency
-			LinkedList<Long> inds2 = new LinkedList<Long>(); //store all the document ids that the word appears in
-			
-			//calculate the frequency - since, iterator, have to store the values in another list to use again
-			for (LongWritable ind : values) {
-				fr++;
-				inds2.add(ind.get());
+		public void reduce(Text key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
+			String key2 = key.toString();
+			String val_towrite = "";
+			long freq = 0;
+			for(Text val : values) {
+				if(key2.charAt(0) == '{') { //documentid key
+					val_towrite  = val_towrite + val.toString() + "\t"; 
+				}
+				else { //word key
+					freq++;
+					val_towrite = "" + freq;
+				}
 			}
-			freqs.put(key.toString(), fr); //add the word to the table storing the frequencies
-			for (Long curr : inds2) {
-				if (docs.get(curr) == null) { // initial condition, initializing the list of words in the document
-					LinkedList<String> wordlist = new LinkedList<String>(); 
-					wordlist.add(key.toString());
-					docs.put(curr, wordlist); //add the list to the document
-				} else {
-					if (!docs.get(curr).contains(key.toString())) { //if the document doesn't already contain the word
+			context.write(key, new Text(val_towrite));
+		}
+	}
+	
+	/*
+	//implement a partitioner in case want to use multiple reducers - that way can make sure 
+	//all words in a document get sent to the same reducer; either have to figure out documents with
+	// for disjoint sets of words, or send words multiple times across reducers; not implemented
+	 // since only using one mapper and reducer
+	public static class Partition extends Partitioner<Text, LongWritable> {
+        @Override
+        public int getPartition(Text key, LongWritable value, int numReduceTasks) {
+        	if(numReduceTasks == 0) {
+        		return 0;
+        	}
+        	Long newkey = Long.parseLong(key.toString().split("#")[0]); //get the document_id, and use that as the hashkey
+        	return (newkey.hashCode() & Integer.MAX_VALUE) % numReduceTasks;
+        }
+     }
+	*/
+	//reducer takes in key value pairs of Text, Text and outputs LongWritable, Text key value pairs
+	//where the values to write are the document id and the line in the document
+	public static class Reduce extends Reducer<Text, Text, LongWritable, Text> {
+		private HashMap<String, Integer> freqs = new HashMap<String, Integer>(); //will store the frequencies of each word
+		private long counter = 0; //keep track of number of documents printed (only works if using one reducer)
+		
+		//assumes words are sorted prior to document ids
+		@Override
+		public void reduce(Text key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
+			int freq = 0; //computes frequency of the word
+			LinkedList<String> linewords = new LinkedList<String>(); //stores the words for the current line
+			for(Text val : values) {
+				if(key.charAt(0) != '{') { //word key
+					freq += Integer.parseInt(val.toString());
+				} 
+				else { //document id key
+					String[] valwords = val.toString().split("\\s");
+					for(int i = 0; i < valwords.length; i++) {
 						int index = 0;
-						//loop through until find correct index to put word in 
-						while (index < docs.get(curr).size() && fr > freqs.get(docs.get(curr).get(index))) {
-							index++;
+						String theword = valwords[i];
+						if(!linewords.contains(theword)) { //only add to list if unique qord
+							int currfreq = freqs.get(theword);
+							while(index < linewords.size() && currfreq > freqs.get(linewords.get(index))) { //find its position in the list
+								index++;
+							}
+							linewords.add(index, theword); //add the word to the list
 						}
-						docs.get(curr).add(index, key.toString()); //add the word to the index
 					}
 				}
 			}
-		}
-
-		//print out all the lines to the context
-		@Override
-		protected void cleanup(Context context) throws IOException, InterruptedException {
-			Object[] keys  = docs.keySet().toArray(); //get the keys
-			Arrays.sort(keys); //sort them so prints out in correct order in terms of line number - if this doesn't matter, can comment out for faster runtime
-			for (int i = 0; i < keys.length; i++) {
-
-				LinkedList<String> currdoc = docs.get(keys[i]);
-				String toprint = "";
-				for (int j = 0; j < currdoc.size(); j++) {
-					toprint = toprint + currdoc.get(j) + "\t"; //build the string
+			if(key.charAt(0) != '{') { //add the word and frequency
+				freqs.put(key.toString(), freq);
+			}
+			else {
+				String thekey = key.toString();
+				int begind = thekey.lastIndexOf("#") + 1;
+				long docid = Long.parseLong(thekey.substring(begind));
+				String finaloutput = "";
+				for(String s : linewords) {
+					finaloutput = finaloutput + s + "\t"; //build the string 
 				}
-
-				context.write(new LongWritable(i+1), new Text(toprint.trim())); //write to the context
+				if(counter == 0) { //start from 1 if at beginning of document - else, start from offset
+					counter = docid + 1;
+				}
+				context.write(new LongWritable(counter), new Text(finaloutput)); //write to the context
+				counter++; //increment the counter
 			}
 		}
 	}
