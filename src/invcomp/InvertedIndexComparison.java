@@ -96,6 +96,7 @@ public class InvertedIndexComparison extends Configured implements Tool {
 		@Override
 		protected void setup(Context context) throws IOException, InterruptedException {
 			FileSystem fs = FileSystem.get(context.getConfiguration());
+			//change the following line to "/inverted_index_sample.txt" for running on the sample output
 			String sw = fs.getHomeDirectory().toString() + "/inverted_index.txt"; // assumes inverted_index.txt file exists in system's home directory
 
 			try {

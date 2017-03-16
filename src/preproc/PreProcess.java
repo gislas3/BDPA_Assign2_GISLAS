@@ -150,7 +150,7 @@ public class PreProcess extends Configured implements Tool {
 		@Override
 		protected void map(LongWritable key, Text value, Context context)
 				throws IOException, InterruptedException {
-			String[] line = value.toString().toLowerCase().split("\\W"); //split on nonword characters (defined in java as all non alphanumeric characters)
+			String[] line = value.toString().toLowerCase().split("[^a-zA-Z0-9]"); //split on nonword characters - certainly not perfect, but should suffice for line comparisons (ie similar lines should be split the same way)
 			for (int i = 0; i < line.length; i++) {
 				if (!swords.contains(line[i]) && !line[i].isEmpty()) { //write to the context if non-empty and the word is not a stopword
 					String oldkey = "" + key; // convert the key to a string
@@ -164,7 +164,7 @@ public class PreProcess extends Configured implements Tool {
 		}
 	}
 
-	//combiner class adds frequencies and concatenates strings (
+	//combiner class adds frequencies and concatenates strings (note: this may not run since there is only one mapper being used)
 	public static class Combine extends Reducer<Text, Text, Text, Text> {
 		@Override
 		public void reduce(Text key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
@@ -239,7 +239,7 @@ public class PreProcess extends Configured implements Tool {
 				long docid = Long.parseLong(thekey.substring(begind));
 				String finaloutput = "";
 				for(String s : linewords) {
-					finaloutput = finaloutput + s + "\t"; //build the string 
+					finaloutput = finaloutput + s + "#" + freqs.get(s) + "\t"; //build the string 
 				}
 				if(counter == 0) { //start from 1 if at beginning of document - else, start from offset
 					counter = docid + 1;
