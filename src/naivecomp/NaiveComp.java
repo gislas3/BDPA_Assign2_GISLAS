@@ -93,7 +93,7 @@ public class NaiveComp extends Configured implements Tool {
 				throws IOException, InterruptedException {
 			String[] line = value.toString().split("\\s"); //split on nonword characters (defined in java as all non alphanumeric characters)
 			String d_id = line[0]; // get the document id (id documentid 2)
-			Text doc_val = new Text(value.toString().substring(line[0].length())); //get the value of the document (get rid of the document_id/key)
+			Text doc_val = new Text(value.toString().substring(line[0].length()).trim()); //get the value of the document (get rid of the document_id/key)
 			context.write(new Text(d_id), new Text(doc_val)); //write the document to the context
 			for(int i = 0; i < doc_ids.size(); i++) { //write all the document ids seen so far + the content of the current document
 				Text keytext = new Text(doc_ids.get(i) + "#" + d_id);
@@ -124,7 +124,7 @@ public class NaiveComp extends Configured implements Tool {
 		public void reduce(Text key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
 				String dline = "";
 				for(Text val: values) {
-					dline = dline + val.toString(); // should just run once (get the content of the second document)
+					dline = dline + val.toString().trim(); // should just run once (get the content of the second document)
 				}
 				if(!key.toString().contains("#")) { //store document content if looking at new document
 					current_doc = dline.split("\\s");
